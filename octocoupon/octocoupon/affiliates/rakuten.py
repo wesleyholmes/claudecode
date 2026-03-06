@@ -1,14 +1,16 @@
 """
 Rakuten Advertising (formerly LinkShare) adapter.
 
-Auth: uses a static Bearer token (RAKUTEN_TOKEN in .env).
-      The OAuth client_credentials flow does NOT work for publisher coupon access.
+Auth: OAuth 2.0 client_credentials. The scope MUST be set to the publisher
+      SID (not "Production") for the token to carry publisher identity.
+      Token expires in 3600s and is cached in memory.
 
-Coupon feed:  GET /coupon/1.0  (XML)
-Advertisers:  GET /v2/advertisers  (JSON)
+Advertisers: GET /v2/advertisers  (JSON)
+Coupons:     GET /coupon/1.0      (XML)
 """
 from __future__ import annotations
 
+import time
 import xml.etree.ElementTree as ET
 
 import httpx
@@ -17,19 +19,48 @@ from octocoupon.config import settings
 from .base import AffiliateAdapter, Advertiser, Coupon, CountryCode, is_expired
 
 BASE_URL = "https://api.linksynergy.com"
+TOKEN_URL = "https://api.linksynergy.com/token"
 
-# Rakuten uses numeric network IDs per region
+# Rakuten numeric network IDs per region
 COUNTRY_NETWORK: dict[CountryCode, str] = {
     "us": "1",
     "au": "41",
     "uk": "3",
 }
 
+# In-memory token cache: (access_token, expiry_timestamp)
+_token_cache: tuple[str, float] | None = None
+
+
+def _get_token() -> str:
+    """Exchange client credentials for a Bearer token. Scope must be the publisher SID."""
+    global _token_cache
+    now = time.time()
+    if _token_cache and now < _token_cache[1] - 60:
+        return _token_cache[0]
+
+    if not settings.rakuten_client_id or not settings.rakuten_client_secret:
+        raise RuntimeError("RAKUTEN_CLIENT_ID and RAKUTEN_CLIENT_SECRET must be set in .env")
+    if not settings.rakuten_sid:
+        raise RuntimeError("RAKUTEN_SID must be set in .env (your publisher Site ID)")
+
+    resp = httpx.post(
+        TOKEN_URL,
+        auth=(settings.rakuten_client_id, settings.rakuten_client_secret),
+        # scope = publisher SID — this is what causes the token to carry publisher identity
+        data={"grant_type": "client_credentials", "scope": settings.rakuten_sid},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    token = data["access_token"]
+    expires_in = data.get("expires_in", 3600)
+    _token_cache = (token, now + expires_in)
+    return token
+
 
 def _headers() -> dict:
-    if not settings.rakuten_token:
-        raise RuntimeError("RAKUTEN_TOKEN must be set in .env")
-    return {"Authorization": f"Bearer {settings.rakuten_token}"}
+    return {"Authorization": f"Bearer {_get_token()}"}
 
 
 class RakutenAdapter(AffiliateAdapter):
@@ -62,8 +93,7 @@ class RakutenAdapter(AffiliateAdapter):
                     logo_url=a.get("logo_url"),
                     raw_json=str(a),
                 ))
-            meta = data.get("_metadata", {})
-            if not meta.get("_links", {}).get("next") or len(batch) < 100:
+            if not data.get("_metadata", {}).get("_links", {}).get("next") or len(batch) < 100:
                 break
             page += 1
 
@@ -71,14 +101,10 @@ class RakutenAdapter(AffiliateAdapter):
 
     def get_coupons(self, advertiser_id: str, country: CountryCode) -> list[Coupon]:
         """Fetch coupons for a specific advertiser."""
-        network_id = COUNTRY_NETWORK.get(country)
-        if not network_id:
-            return []
-
         resp = httpx.get(
             f"{BASE_URL}/coupon/1.0",
             headers=_headers(),
-            params={"sid": settings.rakuten_sid, "mid": advertiser_id, "network": network_id, "limit": 200},
+            params={"sid": settings.rakuten_sid, "mid": advertiser_id, "limit": 200},
             timeout=30,
         )
         resp.raise_for_status()
@@ -87,9 +113,6 @@ class RakutenAdapter(AffiliateAdapter):
     def get_all_coupons(self, country: CountryCode) -> list[Coupon]:
         """Fetch all available coupons at once (more efficient than per-advertiser)."""
         network_id = COUNTRY_NETWORK.get(country)
-        if not network_id:
-            return []
-
         resp = httpx.get(
             f"{BASE_URL}/coupon/1.0",
             headers=_headers(),
@@ -97,8 +120,11 @@ class RakutenAdapter(AffiliateAdapter):
             timeout=30,
         )
         resp.raise_for_status()
-        # Parse without a specific advertiser_id — each coupon carries its own mid
-        return _parse_coupon_xml(resp.text, advertiser_id=None, country=country)
+        all_coupons = _parse_coupon_xml(resp.text, advertiser_id=None, country=country)
+        # Filter to the requested country's network if possible
+        if network_id:
+            return [c for c in all_coupons if c.raw_json and f'"network": "{network_id}"' in c.raw_json] or all_coupons
+        return all_coupons
 
 
 def _parse_coupon_xml(xml_text: str, advertiser_id: str | None, country: CountryCode) -> list[Coupon]:
@@ -106,6 +132,10 @@ def _parse_coupon_xml(xml_text: str, advertiser_id: str | None, country: Country
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:
+        return []
+
+    # Error response
+    if root.tag == "fault":
         return []
 
     coupons = []
@@ -116,12 +146,14 @@ def _parse_coupon_xml(xml_text: str, advertiser_id: str | None, country: Country
 
         promo_types = [pt.text for pt in link.findall("promotiontypes/promotiontype") if pt.text]
         categories = [c.text for c in link.findall("categories/category") if c.text]
-
-        code_el = link.find("couponcode")
-        code = code_el.text if code_el is not None else None
+        network_el = link.find("network")
+        network_id = network_el.get("id") if network_el is not None else ""
 
         mid = link.findtext("advertiserid") or advertiser_id or "unknown"
         offer_id = link.findtext("offerid") or ""
+        code_el = link.find("couponcode")
+        advertiser_name = link.findtext("advertisername") or ""
+
         coupons.append(Coupon(
             id=f"rakuten_{mid}_{offer_id}",
             advertiser_id=mid,
@@ -129,12 +161,12 @@ def _parse_coupon_xml(xml_text: str, advertiser_id: str | None, country: Country
             country=country,
             title=link.findtext("offerdescription") or "",
             description=", ".join(categories),
-            code=code,
+            code=code_el.text if code_el is not None else None,
             discount=", ".join(promo_types) if promo_types else None,
             start_date=link.findtext("offerstartdate"),
             end_date=end_date,
             affiliate_url=link.findtext("clickurl") or "",
-            raw_json=xml_text[:200],
+            raw_json=f'{{"network": "{network_id}", "advertiser": "{advertiser_name}"}}',
         ))
 
     return coupons

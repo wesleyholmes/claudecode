@@ -18,8 +18,9 @@ class Settings(BaseSettings):
     )
 
     # ── Affiliate ──────────────────────────────────────────────────────────────
-    rakuten_token: str = ""       # Static Bearer token from Rakuten dashboard
-    rakuten_sid: str = ""         # Publisher Site ID (e.g. 3639130)
+    rakuten_client_id: str = ""
+    rakuten_client_secret: str = ""
+    rakuten_sid: str = ""         # Publisher Site ID — also used as OAuth scope
 
     cj_api_key: str = ""
     cj_cid: str = ""

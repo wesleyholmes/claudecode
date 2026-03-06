@@ -84,7 +84,13 @@ Return this exact JSON shape:
     )
 
     text = "".join(block.text for block in message.content if hasattr(block, "text"))
-    data = json.loads(text)
+    # Strip markdown code fences if present
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1]  # drop opening fence line
+    if text.endswith("```"):
+        text = text.rsplit("```", 1)[0]
+    data = json.loads(text.strip())
 
     return GeneratedContent(
         wp_title=data["wp_title"],
