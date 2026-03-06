@@ -11,8 +11,8 @@ import httpx
 from octocoupon.config import settings
 from .base import AffiliateAdapter, Advertiser, Coupon, CountryCode, is_expired
 
-BASE_URL = "https://api.rakutenadvertising.com"
-TOKEN_URL = "https://api.rakutenadvertising.com/token"
+BASE_URL = "https://api.linksynergy.com"
+TOKEN_URL = "https://api.linksynergy.com/token"
 
 # Rakuten uses numeric site IDs per region
 COUNTRY_SITE: dict[CountryCode, str] = {
