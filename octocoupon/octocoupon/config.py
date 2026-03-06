@@ -18,9 +18,8 @@ class Settings(BaseSettings):
     )
 
     # ── Affiliate ──────────────────────────────────────────────────────────────
-    rakuten_client_id: str = ""
-    rakuten_client_secret: str = ""
-    rakuten_scope: str = "Production"
+    rakuten_token: str = ""       # Static Bearer token from Rakuten dashboard
+    rakuten_sid: str = ""         # Publisher Site ID (e.g. 3639130)
 
     cj_api_key: str = ""
     cj_cid: str = ""
