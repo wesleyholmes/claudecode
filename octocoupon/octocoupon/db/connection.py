@@ -25,6 +25,26 @@ CREATE TABLE IF NOT EXISTS advertisers (
     synced_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Normalized advertiser catalog: one row per advertiser (not per country)
+CREATE TABLE IF NOT EXISTS advertiser_catalog (
+    id              TEXT PRIMARY KEY,   -- Rakuten advertiser ID
+    name            TEXT NOT NULL,
+    url             TEXT,
+    logo_url        TEXT,
+    network_id      TEXT NOT NULL,      -- Primary Rakuten network (1=US, 3=UK, 41=AU…)
+    countries       TEXT NOT NULL,      -- JSON array of our site codes: ["us","hk","au","sg","uk"]
+    category        TEXT,               -- e.g. "fashion", "beauty", "travel"
+    wp_category_id  INTEGER,            -- WordPress category ID (for posting)
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS wp_categories (
+    slug            TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    wp_id           INTEGER NOT NULL,
+    description     TEXT
+);
+
 CREATE TABLE IF NOT EXISTS coupons (
     id            TEXT PRIMARY KEY,
     advertiser_id TEXT NOT NULL REFERENCES advertisers(id),
